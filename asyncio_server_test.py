@@ -36,8 +36,8 @@ log.setLevel(logging.INFO)
 # Setup BBB IO
 # --------------------------------------------------------------------------- #
 PWM_pin = "P9_14"
-mtr_forward  = "P8_14"
-mtr_reverse = "P9_15"
+mtr_forward  = "P9_27"
+mtr_reverse = "P9_25"
 GPIO.setup(PWM_pin, GPIO.OUT)
 GPIO.setup(mtr_forward, GPIO.OUT)
 GPIO.setup(mtr_reverse, GPIO.OUT)
@@ -147,8 +147,8 @@ async def update_modbus_data(context):
         
         if coils[CO_CONNECTED] == False:
             #TODO This doesn't work if we lose connectivity
-            print("Not Connected!  " + str(input_registers[0]))
-            await asyncio.sleep(1)
+            log.info("Waiting for PLC Connection")
+            await asyncio.sleep(5)
             continue #if the PLC hasn't made contact yet, do not go TODO failsafe
 
         # log.info("The first 8 DIs are: " + str(digital_inputs[0:7]))
@@ -164,8 +164,11 @@ async def update_modbus_data(context):
         elif holding_registers[HR_SETPOINT] > 100: holding_registers[HR_SETPOINT] = 100
         
         # Ramp Speed
-        if coils[CO_RUN] == 0: input_registers[IR_TARGET_SPEED] = 100
+        if coils[CO_RUN] == 0:
+            digital_inputs[DI_RUNNING] = False
+            input_registers[IR_TARGET_SPEED] = 100
         else:
+            digital_inputs[DI_RUNNING] = True
             RAMP = 5
             speed_diff = holding_registers[HR_SETPOINT] - input_registers[IR_TARGET_SPEED]
             # 100 = Stopped, 0 = Full speed; No I don't know why
@@ -186,7 +189,7 @@ async def update_modbus_data(context):
                 
             if input_registers[IR_TARGET_SPEED] < 0: input_registers[IR_TARGET_SPEED] = 0
             elif input_registers[IR_TARGET_SPEED] > 100: input_registers[IR_TARGET_SPEED] = 100
-        print(input_registers[IR_TARGET_SPEED])
+        # print(input_registers[IR_TARGET_SPEED])
         
         #Call Motor Routine!
         MotorControl(holding_registers[HR_SETPOINT], run=coils[CO_RUN]) #await?
@@ -196,7 +199,7 @@ async def update_modbus_data(context):
         context[slave_id].setValues(di, di_addr-1, digital_inputs)
         context[slave_id].setValues(ir, ir_addr-1, input_registers)
         
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
     
 def MotorControl(speed, run=0, forward=1, reverse=0, brake=0):
     # TODO Made do good
@@ -206,15 +209,15 @@ def MotorControl(speed, run=0, forward=1, reverse=0, brake=0):
         GPIO.output(mtr_reverse, reverse)
         PWM.start(PWM_pin, 1)
         PWM.set_duty_cycle(PWM_pin, speed)
-        log.debug("VFD in Run mode")
+        log.info("VFD in Run mode " + str(speed))
     elif brake == True:
         GPIO.output(mtr_forward, 0)
         GPIO.output(mtr_reverse, 0)
-        log.debug("VFD in Brake mode")
+        log.info("VFD in Brake mode")
     else:
         GPIO.output(mtr_forward, 1)
         GPIO.output(mtr_reverse, 1)
-        log.debug("VFD in Coast mode")
+        log.info("VFD in Coast mode")
     
     
 async def runrunrun():
