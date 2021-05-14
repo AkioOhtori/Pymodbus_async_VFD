@@ -1,4 +1,4 @@
-# Pymodbus_VFD\
+# Pymodbus_VFD
 \
 asyncio_server_test.py - Working VFD using asyncio and pymodbus\
 asyncio_server_test_example.py - Simplified asyncio pymodbus server example\
