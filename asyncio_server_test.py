@@ -30,7 +30,7 @@ FORMAT = ('%(asctime)-15s %(threadName)-15s'
           ' %(levelname)-8s %(module)-15s:%(lineno)-8s %(message)s')
 logging.basicConfig(format=FORMAT)
 log = logging.getLogger()
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.INFO)
 
 # --------------------------------------------------------------------------- #
 # Setup BBB IO
@@ -56,9 +56,29 @@ ir_addr = 1
 # --------------------------------------------------------------------------- #
 
 # Holding Registers:
-HR_SETPOINT = 1
-HR_MODE = 2
+HR_SETPOINT = 0 #speed setpoint
+HR_MODE = 1     #operating mode
 
+# Coils
+CO_CONNECTED = 0
+CO_RUN = 1
+CO_FORWARD = 2
+CO_REVERSE = 3
+CO_BRAKE = 4
+CO_ESTOP = 5
+
+# Discrete Inputs
+DI_OK = 0
+DI_RUNNING = 1
+DI_STOPPED = 2
+DI_INVALID = 3
+DI_ACCEL = 4
+DI_DECEL = 5
+
+
+# Input Registers
+IR_TARGET_SPEED = 0
+IR_STATUS = 1
 '''
 Discrete Inputs:
 1 - OK
@@ -68,28 +88,21 @@ Discrete Inputs:
 5 - Accelerating
 6 - Decerlerating
 
-Coils:
-1 - Run
-2 - Forward
-3 - Backwards
-4 - Brake
-5 - E-STOP (?)
-6 - 
-
 Input Registers:
-1 - Speed Setpoint
 1 - Speed (?)
 2 - Status Word (?)
+
+
 '''
 
 # ----------------------------------------------------------------------- #
 # initialize your data store
 # ----------------------------------------------------------------------- #
 store = ModbusSlaveContext(
-    di=ModbusSequentialDataBlock(di_addr, [True, False]*32),
-    co=ModbusSequentialDataBlock(co_addr, [True]*64),
-    hr=ModbusSequentialDataBlock(hr_addr, [17]*32),
-    ir=ModbusSequentialDataBlock(ir_addr, [18]*32))
+    di=ModbusSequentialDataBlock(di_addr, [True] + [False]*61),
+    co=ModbusSequentialDataBlock(co_addr, [False]*64),
+    hr=ModbusSequentialDataBlock(hr_addr, [0]*32),
+    ir=ModbusSequentialDataBlock(ir_addr, [100]+[0]*31) )
 context = ModbusServerContext(slaves=store, single=True)
 
 # ----------------------------------------------------------------------- # 
@@ -122,32 +135,68 @@ async def update_modbus_data(context):
         that there is a race condition for the update.
         """
         slave_id = 0x00
-        if 0:
-            #read current values, partial reads can also be coded as needed
-            digital_inputs = context[slave_id].getValues(di, di_addr-1, count=64)
-            coils = context[slave_id].getValues(co, co_addr-1, count=64)
-            holding_registers = context[slave_id].getValues(hr, hr_addr-1, count=32)
-            input_registers = context[slave_id].getValues(ir, ir_addr-1, count=32)
-            
-            log.info("The first 8 DIs are: " + str(digital_inputs[0:7]))
-            # print(coils)
-            # print(holding_registers)
-            # print(input_registers)
-            digital_inputs[0] = not digital_inputs[0]
-            log.info("The first 8 DIs are now: " + str(digital_inputs[0:7])) #Confrm Change
-            
-            #Hard Coded Safety/ Sanity Checks!
-            if holding_registers[HR_SETPOINT] < 0: holding_registers[HR_SETPOINT] = 0
-            elif holding_registers[HR_SETPOINT] > 100: holding_registers[HR_SETPOINT] = 100
-            
-            #Call Motor Routine!
-            # MotorControl(holding_registers[HR_SETPOINT]) #await?
-            #TODO - Motor reversing safety!
-            #TODO - Speed setpoint ramp up/down!
-            
-            # log.debug("new values: " + str(values))
-            context[slave_id].setValues(di, di_addr-1, digital_inputs)
-        await asyncio.sleep(5)
+        
+        # coils[CO_CONNECTED] = 0 #reset connected bit
+        
+        #read current values, partial reads can also be coded as needed
+        # Addresses need to be -1 because of weird offby1 errors
+        digital_inputs = context[slave_id].getValues(di, di_addr-1, count=64)
+        coils = context[slave_id].getValues(co, co_addr-1, count=64)
+        holding_registers = context[slave_id].getValues(hr, hr_addr-1, count=32)
+        input_registers = context[slave_id].getValues(ir, ir_addr-1, count=32)
+        
+        if coils[CO_CONNECTED] == False:
+            #TODO This doesn't work if we lose connectivity
+            print("Not Connected!  " + str(input_registers[0]))
+            await asyncio.sleep(1)
+            continue #if the PLC hasn't made contact yet, do not go TODO failsafe
+
+        # log.info("The first 8 DIs are: " + str(digital_inputs[0:7]))
+        # print(coils)
+        # print(holding_registers)
+        # print(input_registers)
+        # digital_inputs[0] = not digital_inputs[0]
+        
+        # log.info("The first 8 DIs are now: " + str(digital_inputs[0:7])) #Confrm Change
+        
+        #Hard Coded Safety/ Sanity Checks!
+        if holding_registers[HR_SETPOINT] < 0: holding_registers[HR_SETPOINT] = 0
+        elif holding_registers[HR_SETPOINT] > 100: holding_registers[HR_SETPOINT] = 100
+        
+        # Ramp Speed
+        if coils[CO_RUN] == 0: input_registers[IR_TARGET_SPEED] = 100
+        else:
+            RAMP = 5
+            speed_diff = holding_registers[HR_SETPOINT] - input_registers[IR_TARGET_SPEED]
+            # 100 = Stopped, 0 = Full speed; No I don't know why
+            if speed_diff > 0: #need to slow down
+                digital_inputs[DI_ACCEL] = True
+                digital_inputs[DI_DECEL] = False
+                if speed_diff > RAMP: input_registers[IR_TARGET_SPEED] += RAMP
+                elif speed_diff <= RAMP: input_registers[IR_TARGET_SPEED] = holding_registers[HR_SETPOINT]
+            elif speed_diff < 0: #need to speed up
+                digital_inputs[DI_DECEL] = True
+                digital_inputs[DI_ACCEL] = False
+                RAMP = -RAMP
+                if speed_diff < RAMP: input_registers[IR_TARGET_SPEED] += RAMP
+                elif speed_diff >= RAMP: input_registers[IR_TARGET_SPEED] = holding_registers[HR_SETPOINT]
+            else:
+                digital_inputs[DI_DECEL] = False
+                digital_inputs[DI_ACCEL] = False
+                
+            if input_registers[IR_TARGET_SPEED] < 0: input_registers[IR_TARGET_SPEED] = 0
+            elif input_registers[IR_TARGET_SPEED] > 100: input_registers[IR_TARGET_SPEED] = 100
+        print(input_registers[IR_TARGET_SPEED])
+        
+        #Call Motor Routine!
+        MotorControl(holding_registers[HR_SETPOINT], run=coils[CO_RUN]) #await?
+        #TODO - Motor reversing safety!
+        
+        # log.debug("new values: " + str(values))
+        context[slave_id].setValues(di, di_addr-1, digital_inputs)
+        context[slave_id].setValues(ir, ir_addr-1, input_registers)
+        
+        await asyncio.sleep(2)
     
 def MotorControl(speed, run=0, forward=1, reverse=0, brake=0):
     # TODO Made do good
@@ -156,7 +205,6 @@ def MotorControl(speed, run=0, forward=1, reverse=0, brake=0):
         GPIO.output(mtr_forward, forward)
         GPIO.output(mtr_reverse, reverse)
         PWM.start(PWM_pin, 1)
-         #while c[0] == True:????
         PWM.set_duty_cycle(PWM_pin, speed)
         log.debug("VFD in Run mode")
     elif brake == True:
@@ -167,23 +215,6 @@ def MotorControl(speed, run=0, forward=1, reverse=0, brake=0):
         GPIO.output(mtr_forward, 1)
         GPIO.output(mtr_reverse, 1)
         log.debug("VFD in Coast mode")
-    
-
-async def poop():
-    print("Poop")
-    while True: 
-        # log.debug("updating the context")
-        # context = a[0]
-        # register = 3
-        # slave_id = 0x00
-        # address = 0x100
-        # values = context[slave_id].getValues(register, address, count=5)
-        # values = [v + 1 for v in values]
-        # log.debug("new values: " + str(values))
-        # context[slave_id].setValues(register, address, values)
-        await asyncio.sleep(1)
-        print("Pooping")
-    # a.stop()
     
     
 async def runrunrun():
