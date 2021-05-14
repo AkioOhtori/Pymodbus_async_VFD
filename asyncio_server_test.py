@@ -205,8 +205,8 @@ def MotorControl(speed, run=0, forward=1, reverse=0, brake=0):
     # TODO Made do good
     if run == True:
         #make the motor go
-        GPIO.output(mtr_forward, forward)
-        GPIO.output(mtr_reverse, reverse)
+        GPIO.output(mtr_forward, 1)
+        GPIO.output(mtr_reverse, 0)
         PWM.start(PWM_pin, 1)
         PWM.set_duty_cycle(PWM_pin, speed)
         log.info("VFD in Run mode " + str(speed))
